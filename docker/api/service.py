@@ -115,7 +115,7 @@ class ServiceApiMixin(object):
         except KeyError:
             pass
         if hostname is not None:
-            data["Network"][0]["Aliases"] = [hostname]
+            data["Networks"][0]["Aliases"] = [hostname]
 
         if update_config is not None:
             data['UpdateConfig'] = update_config
