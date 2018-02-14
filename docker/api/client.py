@@ -1,6 +1,5 @@
 import json
 import struct
-import warnings
 from functools import partial
 
 import requests
@@ -9,6 +8,7 @@ import six
 import websocket
 
 from .build import BuildApiMixin
+from .config import ConfigApiMixin
 from .container import ContainerApiMixin
 from .daemon import DaemonApiMixin
 from .exec_api import ExecApiMixin
@@ -26,12 +26,12 @@ from ..constants import (
     MINIMUM_DOCKER_API_VERSION
 )
 from ..errors import (
-    DockerException, TLSParameterError,
+    DockerException, InvalidVersion, TLSParameterError,
     create_api_error_from_http_exception
 )
 from ..tls import TLSConfig
 from ..transport import SSLAdapter, UnixAdapter
-from ..utils import utils, check_resource, update_headers
+from ..utils import utils, check_resource, update_headers, config
 from ..utils.socket import frames_iter, socket_raw_iter
 from ..utils.json_stream import json_stream
 try:
@@ -43,6 +43,7 @@ except ImportError:
 class APIClient(
         requests.Session,
         BuildApiMixin,
+        ConfigApiMixin,
         ContainerApiMixin,
         DaemonApiMixin,
         ExecApiMixin,
@@ -61,21 +62,21 @@ class APIClient(
         >>> import docker
         >>> client = docker.APIClient(base_url='unix://var/run/docker.sock')
         >>> client.version()
-        {u'ApiVersion': u'1.24',
+        {u'ApiVersion': u'1.33',
          u'Arch': u'amd64',
-         u'BuildTime': u'2016-09-27T23:38:15.810178467+00:00',
-         u'Experimental': True,
-         u'GitCommit': u'45bed2c',
-         u'GoVersion': u'go1.6.3',
-         u'KernelVersion': u'4.4.22-moby',
+         u'BuildTime': u'2017-11-19T18:46:37.000000000+00:00',
+         u'GitCommit': u'f4ffd2511c',
+         u'GoVersion': u'go1.9.2',
+         u'KernelVersion': u'4.14.3-1-ARCH',
+         u'MinAPIVersion': u'1.12',
          u'Os': u'linux',
-         u'Version': u'1.12.2-rc1'}
+         u'Version': u'17.10.0-ce'}
 
     Args:
         base_url (str): URL to the Docker server. For example,
             ``unix:///var/run/docker.sock`` or ``tcp://127.0.0.1:1234``.
         version (str): The version of the API to use. Set to ``auto`` to
-            automatically detect the server's version. Default: ``1.26``
+            automatically detect the server's version. Default: ``1.30``
         timeout (int): Default timeout for API calls, in seconds.
         tls (bool or :py:class:`~docker.tls.TLSConfig`): Enable TLS. Pass
             ``True`` to enable it with default options, or pass a
@@ -85,6 +86,7 @@ class APIClient(
     """
 
     __attrs__ = requests.Session.__attrs__ + ['_auth_configs',
+                                              '_general_configs',
                                               '_version',
                                               'base_url',
                                               'timeout']
@@ -103,7 +105,10 @@ class APIClient(
         self.timeout = timeout
         self.headers['User-Agent'] = user_agent
 
-        self._auth_configs = auth.load_config()
+        self._general_configs = config.load_general_config()
+        self._auth_configs = auth.load_config(
+            config_dict=self._general_configs
+        )
 
         base_url = utils.parse_host(
             base_url, IS_WINDOWS_PLATFORM, tls=bool(tls)
@@ -154,11 +159,9 @@ class APIClient(
                 )
             )
         if utils.version_lt(self._version, MINIMUM_DOCKER_API_VERSION):
-            warnings.warn(
-                'The minimum API version supported is {}, but you are using '
-                'version {}. It is recommended you either upgrade Docker '
-                'Engine or use an older version of Docker SDK for '
-                'Python.'.format(MINIMUM_DOCKER_API_VERSION, self._version)
+            raise InvalidVersion(
+                'API versions below {} are no longer supported by this '
+                'library.'.format(MINIMUM_DOCKER_API_VERSION)
             )
 
     def _retrieve_server_version(self):
@@ -204,7 +207,7 @@ class APIClient(
                     'instead'.format(arg, type(arg))
                 )
 
-        quote_f = partial(six.moves.urllib.parse.quote_plus, safe="/:")
+        quote_f = partial(six.moves.urllib.parse.quote, safe="/:")
         args = map(quote_f, args)
 
         if kwargs.get('versioned_api', True):
@@ -347,17 +350,8 @@ class APIClient(
                 break
             yield data
 
-    def _stream_raw_result_old(self, response):
-        ''' Stream raw output for API versions below 1.6 '''
-        self._raise_for_status(response)
-        for line in response.iter_lines(chunk_size=1,
-                                        decode_unicode=True):
-            # filter out keep-alive new lines
-            if line:
-                yield line
-
     def _stream_raw_result(self, response):
-        ''' Stream result for TTY-enabled container above API 1.6 '''
+        ''' Stream result for TTY-enabled container '''
         self._raise_for_status(response)
         for out in response.iter_content(chunk_size=1, decode_unicode=True):
             yield out
@@ -413,11 +407,6 @@ class APIClient(
         return self._get_result_tty(stream, res, self._check_is_tty(container))
 
     def _get_result_tty(self, stream, res, is_tty):
-        # Stream multi-plexing was only introduced in API v1.6. Anything
-        # before that needs old-style streaming.
-        if utils.compare_version('1.6', self._version) < 0:
-            return self._stream_raw_result_old(res)
-
         # We should also use raw streaming (without keep-alives)
         # if we're dealing with a tty-enabled container.
         if is_tty:

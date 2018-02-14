@@ -5,8 +5,7 @@ def imageNamePy2
 def imageNamePy3
 def images = [:]
 
-
-def dockerVersions = ["1.13.1", "17.04.0-ce", "17.05.0-ce", "17.06.0-ce", "17.07.0-ce-rc3"]
+def dockerVersions = ["17.06.2-ce", "17.12.0-ce", "18.01.0-ce"]
 
 def buildImage = { name, buildargs, pyTag ->
   img = docker.image(name)
@@ -28,13 +27,13 @@ def buildImages = { ->
       imageNamePy3 = "${imageNameBase}:py3-${gitCommit()}"
 
       buildImage(imageNamePy2, ".", "py2.7")
-      buildImage(imageNamePy3, "-f Dockerfile-py3 .", "py3.5")
+      buildImage(imageNamePy3, "-f Dockerfile-py3 .", "py3.6")
     }
   }
 }
 
 def getAPIVersion = { engineVersion ->
-  def versionMap = ['1.13.': '1.26', '17.04': '1.27', '17.05': '1.29', '17.06': '1.30', '17.07': '1.31']
+  def versionMap = ['17.06': '1.30', '17.12': '1.35', '18.01': '1.35']
   return versionMap[engineVersion.substring(0, 5)]
 }
 
